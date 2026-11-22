@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +28,14 @@ constexpr Address TaskManager = 0x4592ea8;
 constexpr Address TaskGroupManager = 0x4592f28;
 constexpr Address RegisterTask = 0xeb5540;
 constexpr Address ForceDeath = 0x5eea20;
+// ChrIns death rune award (float (ChrIns*)). Every machine in a co-op session
+// runs it for its own copy of an enemy that dies and gives the runes to its
+// local player; that is how the game shares runes. Bit 2 of +0x1c6 marks a
+// death whose runes were already given.
+constexpr Address RuneAward = 0x3fe030;
+constexpr std::ptrdiff_t DeathFlags = 0x1c6;
+constexpr std::array<std::uint8_t, 17> RuneAwardPrologue{
+    0x40,0x53, 0x48,0x83,0xec,0x40, 0x48,0x8b,0x01, 0x48,0x8b,0xd9, 0x0f,0x29,0x74,0x24,0x30};
 constexpr Address CanTarget = 0x51b8b0;
 constexpr Address WorldVtable = 0x2a509d0;
 constexpr Address EnemyVtable = 0x2a49090;
@@ -174,9 +183,12 @@ bool readable(Address p, std::size_t size) {
     return true;
 }
 
+bool matches(Address p, const std::uint8_t* bytes, std::size_t size) {
+    return readable(p, size) && std::memcmp(reinterpret_cast<const void*>(p), bytes, size) == 0;
+}
+
 bool matches(Address p, std::initializer_list<std::uint8_t> bytes) {
-    return readable(p, bytes.size()) &&
-           std::memcmp(reinterpret_cast<const void*>(p), bytes.begin(), bytes.size()) == 0;
+    return matches(p, bytes.begin(), bytes.size());
 }
 
 void log(const char* message) {
@@ -480,6 +492,8 @@ bool hit_by_party(Key attacker, Key player_handle) {
                         std::find(party_handles.begin(), party_handles.end(), attacker) != party_handles.end());
 }
 
+bool death_hook_active{};
+
 void enemy_tick(const Character& c, Key player_handle, Address game_data, bool owns_world) {
     const Key actor_handle = get<Key>(c.instance + Handle);
     const Key key = placement_key(c);
@@ -512,6 +526,11 @@ void enemy_tick(const Character& c, Key player_handle, Address game_data, bool o
         return;
     }
     if (!old.seen_alive) return;
+    if (death_hook_active) {
+        // Kills come from the game's rune award instead (see on_rune_award).
+        old.seen_alive = false;
+        return;
+    }
     const bool credited = old.player_hit || hit_by_party(get<Key>(c.instance + LastHitBy), player_handle);
     if (key) {
         if (!append_record('K', key)) return;
@@ -533,6 +552,103 @@ void enemy_tick(const Character& c, Key player_handle, Address game_data, bool o
 bool still_same_enemy(Address instance, const Observation& old, Character& c) {
     return load_character(instance, false, c) && c.data == old.data &&
            get<Key>(instance + Handle) == old.handle;
+}
+
+// A death the game awarded runes for, captured by the rune award hook. The
+// hook may run on a game worker thread, so it only queues the facts and the
+// gameplay task handles them.
+struct Death {
+    Key placement{};
+    int model{};
+    int npc_param{};
+    int team{};
+    int chr_type{};
+    bool player_shaped{};
+};
+SRWLOCK death_lock = SRWLOCK_INIT;
+std::vector<Death> pending_deaths;
+using RuneAwardFn = float (*)(Address);
+RuneAwardFn rune_award_original{};
+std::atomic<unsigned> rune_award_calls{};
+
+// The game's own rune award also runs for friendly NPCs. Keep the same
+// hostile roles the map scan accepts, without the live target check, which
+// a dead character no longer passes.
+bool counts_as_enemy(const Death& d) {
+    if (d.model == 100 || d.model == 1000 || d.model == 8000) return false;
+    if (d.player_shaped && d.chr_type != 5 && d.chr_type != 20 && d.chr_type != 21) return false;
+    if (d.team == 6 || d.team == 7) return true;
+    return d.model != 0 && d.team != 0;
+}
+
+float on_rune_award(Address chr) {
+    const bool before = readable(chr + DeathFlags, 1) && (get<std::uint8_t>(chr + DeathFlags) & 2);
+    const float runes = rune_award_original(chr);
+    ++rune_award_calls;
+    if (before || !readable(chr + DeathFlags, 1) || !(get<std::uint8_t>(chr + DeathFlags) & 2)) return runes;
+    Character c{};
+    if (!load_character(chr, false, c)) return runes;
+    const Death d{placement_key(c), c.model, c.npc_param, c.team, get<int>(chr + 0x68),
+                  get<Address>(chr) == image + PlayerVtable};
+    AcquireSRWLockExclusive(&death_lock);
+    if (pending_deaths.size() < 4096) pending_deaths.push_back(d);
+    ReleaseSRWLockExclusive(&death_lock);
+    return runes;
+}
+
+void process_deaths(Address game_data, bool owns_world) {
+    std::vector<Death> batch;
+    AcquireSRWLockExclusive(&death_lock);
+    batch.swap(pending_deaths);
+    ReleaseSRWLockExclusive(&death_lock);
+    for (const Death& d : batch) {
+        if (!counts_as_enemy(d)) continue;
+        if (d.placement && world.defeated.contains(d.placement)) continue; // Already counted once.
+        if (d.placement) {
+            if (!append_record('K', d.placement)) continue;
+            world.defeated.insert(d.placement);
+            log_event(owns_world ? "Enemy defeat recorded" : "Enemy defeat in host world recorded for own world",
+                      d.placement, d.model);
+        }
+        Character c{};
+        c.model = d.model;
+        c.npc_param = d.npc_param;
+        reward_kill(c, game_data, d.placement, owns_world);
+    }
+}
+
+// Replace the first instructions of `target` with a jump to `hook` and return
+// a trampoline that runs them and continues the original function.
+template <std::size_t N>
+Address install_jump(Address target, const std::array<std::uint8_t, N>& prologue, Address hook) {
+    static_assert(N >= 14);
+    if (!matches(target, prologue.data(), N)) return 0;
+    auto* trampoline = static_cast<std::uint8_t*>(
+        VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!trampoline) return 0;
+    const Address resume = target + N;
+    std::memcpy(trampoline, prologue.data(), N);
+    const std::uint8_t jump[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
+    std::memcpy(trampoline + N, jump, 6);
+    std::memcpy(trampoline + N + 6, &resume, 8);
+    std::array<std::uint8_t, N> patch{};
+    patch.fill(0x90);
+    std::memcpy(patch.data(), jump, 6);
+    std::memcpy(patch.data() + 6, &hook, 8);
+    DWORD protection{};
+    if (!VirtualProtect(reinterpret_cast<void*>(target), N, PAGE_EXECUTE_READWRITE, &protection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return 0;
+    }
+    std::memcpy(reinterpret_cast<void*>(target), patch.data(), N);
+    VirtualProtect(reinterpret_cast<void*>(target), N, protection, &protection);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(target), N);
+    FlushInstructionCache(GetCurrentProcess(), trampoline, 64);
+    return reinterpret_cast<Address>(trampoline);
+}
+
+bool jump_in_place(Address target, Address hook) {
+    return matches(target, {0xff, 0x25, 0, 0, 0, 0}) && readable(target + 6, 8) && get<Address>(target + 6) == hook;
 }
 
 // 1 = storage exists, 0 = no storage (flags in the group are never kept),
@@ -690,6 +806,12 @@ void tick(TickTiming& timing) {
     }
     world.last_playtime = playtime;
     if (owns_world) check_item_flags();
+    if (death_hook_active && frame % 128 == 0 &&
+        !jump_in_place(image + RuneAward, reinterpret_cast<Address>(&on_rune_award))) {
+        death_hook_active = false; // Another mod replaced the hook; use the map scan.
+        log("Rune award hook was overwritten; falling back to the enemy scan");
+    }
+    process_deaths(game_data, owns_world);
     undo_rune_levels(game_data, hash_part(player_id, static_cast<std::uint32_t>(slot)));
     bool wiped{};
     static bool reported_party_error{};
@@ -753,8 +875,11 @@ void tick(TickTiming& timing) {
         enemy_tick(character, player_handle, game_data, owns_world);
         ++enemies;
     };
+    // With the rune award hook a guest has nothing to scan: only the host
+    // changes enemies, and kills arrive through the hook.
+    const bool scan = owns_world || !death_hook_active;
     timing.next("nearby characters");
-    if (readable(manager + ByDistance + 8, 2 * sizeof(Address))) {
+    if (scan && readable(manager + ByDistance + 8, 2 * sizeof(Address))) {
         const Address begin = get<Address>(manager + ByDistance + 8);
         const Address end = get<Address>(manager + ByDistance + 0x10);
         if (end > begin && end - begin <= 0x10000 && (end - begin) % 0x10 == 0 &&
@@ -767,9 +892,8 @@ void tick(TickTiming& timing) {
     // Check nearby enemies first. Spread the background map scan over multiple
     // updates so streaming a large map cannot put the whole scan in one frame.
     timing.next("streamed map characters");
-    // Guests scan too (read only) so they also see kills made by teammates
-    // farther away than the nearby list reaches.
-    if (readable(manager + CharacterSets, CharacterSetCount * sizeof(Address))) {
+    // Without the hook guests scan too (read only) to see teammates' kills.
+    if (scan && readable(manager + CharacterSets, CharacterSetCount * sizeof(Address))) {
         scan_map_entries(manager, map_scan, [&](Address actor) {
             ++timing.map_candidates;
             process_actor(actor);
@@ -864,6 +988,15 @@ DWORD WINAPI init(void* module) {
             return 0;
         }
         rng.seed(std::random_device{}());
+        // Install before the world loads, while no character can be dying.
+        if (const Address trampoline = install_jump(image + RuneAward, RuneAwardPrologue,
+                                                    reinterpret_cast<Address>(&on_rune_award))) {
+            rune_award_original = reinterpret_cast<RuneAwardFn>(trampoline);
+            death_hook_active = true;
+            log("Rune award hook installed; kills follow the game's rune sharing");
+        } else {
+            log("Rune award hook unavailable; using the enemy scan");
+        }
         HMODULE pinned{};
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
                                 reinterpret_cast<LPCWSTR>(&task_tick), &pinned)) return 0;

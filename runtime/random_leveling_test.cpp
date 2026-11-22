@@ -196,6 +196,69 @@ int main() {
     enemy_tick(npc, 55, player, false);
     assert(world.kills == 2);
     party_handles.clear();
+
+    // Rune award hook: a stand-in for the game's function with the same
+    // prologue. It marks the runes as given and returns 1.0f.
+    {
+        auto* code = static_cast<std::uint8_t*>(
+            VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+        assert(code);
+        std::memcpy(code, RuneAwardPrologue.data(), RuneAwardPrologue.size());
+        const std::uint8_t body[] = {0x80,0x8b,0xc6,0x01,0x00,0x00,0x02, 0x0f,0x28,0x74,0x24,0x30,
+                                     0xb8,0x00,0x00,0x80,0x3f, 0x66,0x0f,0x6e,0xc0,
+                                     0x48,0x83,0xc4,0x40, 0x5b, 0xc3};
+        std::memcpy(code + RuneAwardPrologue.size(), body, sizeof(body));
+        const auto target = reinterpret_cast<Address>(code);
+        const auto hook = reinterpret_cast<Address>(&on_rune_award);
+        const Address trampoline = install_jump(target, RuneAwardPrologue, hook);
+        assert(trampoline && jump_in_place(target, hook));
+        assert(!install_jump(target, RuneAwardPrologue, hook)); // Never patch twice.
+        rune_award_original = reinterpret_cast<RuneAwardFn>(trampoline);
+
+        std::array<std::uint8_t, 0x200> chr{};
+        std::array<std::uint8_t, 0x200> data{};
+        std::array<Address, 1> modules{};
+        const auto chr_at = reinterpret_cast<Address>(chr.data());
+        const auto data_at = reinterpret_cast<Address>(data.data());
+        image = 0x10000000;
+        put(chr_at, image + EnemyVtable);
+        modules[0] = data_at;
+        put(chr_at + Modules, reinterpret_cast<Address>(modules.data()));
+        put(data_at, image + DataVtable);
+        put(data_at + 8, chr_at);
+        put(data_at + Health, 0);
+        put(data_at + MaxHealth, 300);
+        put(data_at + BaseHealth, 300);
+        put(chr_at + 0x64, 2000);
+        put(chr_at + Team, std::uint8_t(6));
+        put(chr_at + 0x3c, 0x3c223800u);
+        put(chr_at + 0x1e8, 1042380209u);
+        const auto award = reinterpret_cast<RuneAwardFn>(target);
+        std::filesystem::remove(world.journal);
+        open_world(5, 123, 0, 0, true);
+        assert(award(chr_at) == 1.0f);
+        assert(award(chr_at) == 1.0f); // Runes already given: no second kill.
+        assert(rune_award_calls == 2 && pending_deaths.size() == 1);
+        process_deaths(player, false);
+        assert(world.kills == 1 && pending_deaths.empty());
+        assert(world.defeated.size() == 1);
+        open_world(5, 123, 0, 0, true); // Saved: still one kill after reloading.
+        assert(world.kills == 1 && world.defeated.size() == 1);
+
+        // A friendly NPC (human model 0, friendly team) gives no level.
+        chr.fill(0);
+        put(chr_at, image + EnemyVtable);
+        put(chr_at + Modules, reinterpret_cast<Address>(modules.data()));
+        put(chr_at + 0x64, 0);
+        put(chr_at + Team, std::uint8_t(1));
+        put(chr_at + 0x3c, 0x3c223800u);
+        put(chr_at + 0x1e8, 1042380210u);
+        award(chr_at);
+        process_deaths(player, false);
+        assert(world.kills == 1);
+        std::filesystem::remove(world.journal);
+        VirtualFree(code, 0, MEM_RELEASE);
+    }
     std::filesystem::remove(world.journal);
 
     // Level curve: wildlife gives nothing, enemies 1 point, bosses 20 points.
