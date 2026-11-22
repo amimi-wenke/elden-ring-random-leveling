@@ -1,5 +1,5 @@
 @echo off
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch.ps1" %*
-set "ONE_LIFE_EXIT=%ERRORLEVEL%"
-if not "%ONE_LIFE_EXIT%"=="0" pause
-exit /b %ONE_LIFE_EXIT%
+set "RANDOM_LEVELING_EXIT=%ERRORLEVEL%"
+if not "%RANDOM_LEVELING_EXIT%"=="0" pause
+exit /b %RANDOM_LEVELING_EXIT%

@@ -6,8 +6,8 @@ start_online = false
 game = "eldenring"
 
 [[packages]]
-id = "one-life"
-path = "./one-life-assets"
+id = "random-leveling"
+path = "./random-leveling-assets"
 
 [[natives]]
-path = "./runtime/one-life.dll"
+path = "./runtime/random-leveling.dll"

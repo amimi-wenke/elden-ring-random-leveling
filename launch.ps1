@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (!$Check -and (Get-Process -Name eldenring -ErrorAction SilentlyContinue)) {
-    throw 'Elden Ring is already running. Exit the current game before starting One Life.'
+    throw 'Elden Ring is already running. Exit the current game before starting Random Leveling.'
 }
 
 $steam = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath
@@ -56,9 +56,9 @@ if ($Seamless -or $SeamlessDll) {
 }
 
 $gameExe = Join-Path $Game 'eldenring.exe'
-$profile = Join-Path $PSScriptRoot 'one-life.me3'
-$mod = Join-Path $PSScriptRoot 'one-life-assets\regulation.bin'
-$runtime = Join-Path $PSScriptRoot 'runtime\one-life.dll'
+$profile = Join-Path $PSScriptRoot 'random-leveling.me3'
+$mod = Join-Path $PSScriptRoot 'random-leveling-assets\regulation.bin'
+$runtime = Join-Path $PSScriptRoot 'runtime\random-leveling.dll'
 foreach ($file in @($gameExe, $profile, $mod, $runtime)) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing file: $file" }
 }

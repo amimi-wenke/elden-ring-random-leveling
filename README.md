@@ -1,11 +1,11 @@
-# 《艾尔登法环》一命挑战
+# 《艾尔登法环》随机升级（Random Leveling）
 
 适用于 Steam 国际版 1.17.2（`eldenring.exe` 2.7.2.0）。前置依赖为 Mod Engine 3，已用 0.13.0 验证配置。 [Mod Engine 3 官方发布页](https://github.com/garyttierney/me3/releases/tag/v0.13.0)
 
-解压时保留整个 `EldenRing-OneLife` 文件夹。参数放在本 MOD 的 `one-life-assets`，法魂（The Convergence）等 MOD 可以继续使用自己原有的目录和启动脚本。
+解压时保留整个 `EldenRing-RandomLeveling` 文件夹。参数放在本 MOD 的 `random-leveling-assets`，法魂（The Convergence）等 MOD 可以继续使用自己原有的目录和启动脚本。
 
 - 单独使用时双击 `Start-offline.cmd`。
-- 和无缝联机组合时，由所有玩家安装同版本的一命挑战 MOD、Mod Engine 3 和无缝联机，然后双击 `Start-seamless.cmd`。脚本默认查找游戏目录下的 `SeamlessCoop\ersc.dll`，也可以用 `-SeamlessDll` 指定已安装的 DLL。联机已组合加载的版本为 2.0.3，双人玩法同步仍待测试。 [无缝联机官方发行页](https://github.com/yuiamoroll/EldenRingSeamlessCoopRelease/releases/tag/v2.0.3)
+- 和无缝联机组合时，由所有玩家安装同版本的随机升级 MOD、Mod Engine 3 和无缝联机，然后双击 `Start-seamless.cmd`。脚本默认查找游戏目录下的 `SeamlessCoop\ersc.dll`，也可以用 `-SeamlessDll` 指定已安装的 DLL。联机已组合加载的版本为 2.0.3，双人玩法同步仍待测试。 [无缝联机官方发行页](https://github.com/yuiamoroll/EldenRingSeamlessCoopRelease/releases/tag/v2.0.3)
 
 脚本会在 Steam 库里查找游戏，并从系统 PATH 或游戏目录的 `me3\Windows` 查找加载器。自定义安装路径也可以手动指定。
 
@@ -23,7 +23,7 @@ Start-offline.cmd -Game "D:\SteamLibrary\steamapps\common\ELDEN RING\Game" -Load
 
 ## 存档和测试状态
 
-单独使用时 Mod Engine 3 使用 `ER0000.onelife`。联机入口向 Mod Engine 3 指定 `ER0000.onelifecoop.co2`，实际存档名可能受无缝联机的存档扩展名设置影响。初次启动时 Mod Engine 3 可能生成已有存档的副本。请选「开始新游戏」新建角色进行测试。移动 MOD 后如果要继续同一角色，随包迁移 `state` 目录。角色本身保存在游戏存档目录。
+单独使用时 Mod Engine 3 使用 `ER0000.onelife`。联机入口向 Mod Engine 3 指定 `ER0000.onelifecoop.co2`，这两个存档名沿用 MOD 改名前的名称，以免已有角色找不到。实际存档名可能受无缝联机的存档扩展名设置影响。初次启动时 Mod Engine 3 可能生成已有存档的副本。请选「开始新游戏」新建角色进行测试。移动 MOD 后如果要继续同一角色，随包迁移 `state` 目录。角色本身保存在游戏存档目录。
 
 自动测试覆盖了属性上限、血量线性累加、角色记录读写，以及敌人更换运行时地址后按出生位置应用死亡记录。尚未用新角色实测传送、死亡和读档后的敌人状态。剧情触发的临时敌人及没有稳定地图标识的敌人可能刷新。
 

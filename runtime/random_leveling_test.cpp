@@ -1,4 +1,4 @@
-#include "one_life.cpp"
+#include "random_leveling.cpp"
 
 #include <cassert>
 
@@ -51,7 +51,7 @@ int main() {
 
     wchar_t temp[MAX_PATH];
     assert(GetTempPathW(std::size(temp), temp));
-    state_dir = std::filesystem::path(temp) / (L"elden-one-life-test-" + std::to_wstring(GetCurrentProcessId()));
+    state_dir = std::filesystem::path(temp) / (L"elden-random-leveling-test-" + std::to_wstring(GetCurrentProcessId()));
     std::filesystem::create_directory(state_dir);
 
     std::array<unsigned, 32> stats{};
@@ -233,7 +233,7 @@ int main() {
     put(fm + 0x20, 100u);
     assert(flag_group_state(1043317) == -1);
 
-    std::filesystem::remove(state_dir / L"one-life.log");
+    std::filesystem::remove(state_dir / L"random-leveling.log");
     std::filesystem::remove(state_dir);
-    std::puts("One Life runtime checks passed.");
+    std::puts("Random Leveling runtime checks passed.");
 }

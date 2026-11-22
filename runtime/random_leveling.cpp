@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 
-extern "C" int one_life_probe_byte(const void* address);
+extern "C" int random_leveling_probe_byte(const void* address);
 
 namespace {
 using Address = std::uintptr_t;
@@ -168,11 +168,11 @@ template <typename T> void put(Address p, T value) {
 bool readable(Address p, std::size_t size) {
     if (p < 0x10000 || size == 0 || size - 1 > 0x00007fffffffffffull ||
         p > 0x00007fffffffffffull - (size - 1)) return false;
-    if (!one_life_probe_byte(reinterpret_cast<const void*>(p))) return false;
+    if (!random_leveling_probe_byte(reinterpret_cast<const void*>(p))) return false;
     constexpr Address PageSize = 4096;
     const Address last = p + size - 1;
     for (Address page = (p & ~(PageSize - 1)) + PageSize; page <= last; page += PageSize) {
-        if (!one_life_probe_byte(reinterpret_cast<const void*>(page))) return false;
+        if (!random_leveling_probe_byte(reinterpret_cast<const void*>(page))) return false;
     }
     return true;
 }
@@ -183,7 +183,7 @@ bool matches(Address p, std::initializer_list<std::uint8_t> bytes) {
 }
 
 void log(const char* message) {
-    if (FILE* file = _wfopen((state_dir / L"one-life.log").c_str(), L"ab")) {
+    if (FILE* file = _wfopen((state_dir / L"random-leveling.log").c_str(), L"ab")) {
         std::fprintf(file, "%s\n", message);
         std::fclose(file);
     }

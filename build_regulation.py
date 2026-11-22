@@ -214,7 +214,7 @@ def verify(reg, built, redirects, item_flags):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
-    parser.add_argument("--output", type=Path, default=ROOT / "one-life-assets" / "regulation.bin")
+    parser.add_argument("--output", type=Path, default=ROOT / "random-leveling-assets" / "regulation.bin")
     args = parser.parse_args()
 
     source = (args.game / "regulation.bin").resolve()

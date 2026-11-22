@@ -1,7 +1,7 @@
     .text
-    .globl one_life_probe_byte
-    .seh_proc one_life_probe_byte
-one_life_probe_byte:
+    .globl random_leveling_probe_byte
+    .seh_proc random_leveling_probe_byte
+random_leveling_probe_byte:
     .seh_handler __C_specific_handler, @except
     .seh_endprologue
 .Lread_begin:
