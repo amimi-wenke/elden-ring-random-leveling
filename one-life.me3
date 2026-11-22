@@ -1,0 +1,13 @@
+profileVersion = "v1"
+savefile = "ER0000.onelife"
+start_online = false
+
+[[supports]]
+game = "eldenring"
+
+[[packages]]
+id = "one-life"
+path = "./one-life-assets"
+
+[[natives]]
+path = "./runtime/one-life.dll"
