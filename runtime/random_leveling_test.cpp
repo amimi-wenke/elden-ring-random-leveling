@@ -170,6 +170,32 @@ int main() {
     ++frame;
     enemy_tick(npc, 55, player, true);
     assert(suppressed_character == new_actor); // Back home: stays dead.
+
+    // A teammate's kill gives this player level points too; an enemy that
+    // no player hit gives none.
+    put(new_actor + 0x1e8, 1042380207u);
+    put(new_actor + Handle, Key(94));
+    put(new_actor + LastHitBy, Key(77));
+    npc = {new_actor, new_data, 300, 300, 300, 300, 2000, 7, false};
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    npc.hp = 0;
+    npc.dead = true;
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    assert(world.kills == 1); // Handle 77 is not in the party.
+    party_handles = {77};
+    put(new_actor + 0x1e8, 1042380208u);
+    put(new_actor + Handle, Key(95));
+    npc = {new_actor, new_data, 300, 300, 300, 300, 2000, 7, false};
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    npc.hp = 0;
+    npc.dead = true;
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    assert(world.kills == 2);
+    party_handles.clear();
     std::filesystem::remove(world.journal);
 
     // Level curve: wildlife gives nothing, enemies 1 point, bosses 20 points.

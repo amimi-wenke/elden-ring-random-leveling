@@ -471,6 +471,15 @@ void reward_kill(const Character& c, Address game_data, Key key, bool /*owns_wor
     log_event("Enemy kill counted; level points", key, static_cast<int>(world.progress));
 }
 
+// Handles of the other players in a co-op session. A kill by any of them
+// counts for everyone, so the whole party levels together.
+std::vector<Key> party_handles;
+
+bool hit_by_party(Key attacker, Key player_handle) {
+    return attacker && (attacker == player_handle ||
+                        std::find(party_handles.begin(), party_handles.end(), attacker) != party_handles.end());
+}
+
 void enemy_tick(const Character& c, Key player_handle, Address game_data, bool owns_world) {
     const Key actor_handle = get<Key>(c.instance + Handle);
     const Key key = placement_key(c);
@@ -498,12 +507,12 @@ void enemy_tick(const Character& c, Key player_handle, Address game_data, bool o
     }
     if (alive) {
         old.seen_alive = true;
-        old.player_hit = old.player_hit || get<Key>(c.instance + LastHitBy) == player_handle;
+        old.player_hit = old.player_hit || hit_by_party(get<Key>(c.instance + LastHitBy), player_handle);
         if (owns_world) scale_enemy(c, old);
         return;
     }
     if (!old.seen_alive) return;
-    const bool credited = old.player_hit || get<Key>(c.instance + LastHitBy) == player_handle;
+    const bool credited = old.player_hit || hit_by_party(get<Key>(c.instance + LastHitBy), player_handle);
     if (key) {
         if (!append_record('K', key)) return;
         world.defeated.insert(key);
@@ -711,6 +720,22 @@ void tick(TickTiming& timing) {
     }
 
     const Key player_handle = get<Key>(player.instance + Handle);
+    party_handles.clear();
+    if (seamless) {
+        const Address set = manager + PlayerChrSet;
+        if (readable(set, 0x20)) {
+            const auto capacity = get<unsigned>(set + 0x10);
+            const auto entries = get<Address>(set + 0x18);
+            if (capacity && capacity <= PlayerSetLimit && readable(entries, capacity * 0x10)) {
+                for (unsigned i = 0; i < capacity; ++i) {
+                    const auto actor = get<Address>(entries + i * 0x10);
+                    Character p{};
+                    if (actor && actor != player.instance && load_character(actor, true, p))
+                        party_handles.push_back(get<Key>(actor + Handle));
+                }
+            }
+        }
+    }
     ++frame;
     unsigned enemies{};
     const auto process_actor = [&](Address actor) {
@@ -742,7 +767,9 @@ void tick(TickTiming& timing) {
     // Check nearby enemies first. Spread the background map scan over multiple
     // updates so streaming a large map cannot put the whole scan in one frame.
     timing.next("streamed map characters");
-    if (owns_world && readable(manager + CharacterSets, CharacterSetCount * sizeof(Address))) {
+    // Guests scan too (read only) so they also see kills made by teammates
+    // farther away than the nearby list reaches.
+    if (readable(manager + CharacterSets, CharacterSetCount * sizeof(Address))) {
         scan_map_entries(manager, map_scan, [&](Address actor) {
             ++timing.map_candidates;
             process_actor(actor);
