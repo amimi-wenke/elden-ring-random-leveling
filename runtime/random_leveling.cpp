@@ -126,9 +126,6 @@ struct World {
 Address image{};
 std::filesystem::path state_dir;
 std::unordered_map<Address, Observation> observed;
-std::unordered_set<Key> guest_defeats;
-std::uint32_t guest_kills{};
-std::uint32_t guest_progress{};
 World world;
 
 // Last known level, attributes and runes of the local character. A level
@@ -457,22 +454,21 @@ bool is_boss(const Character& c) {
     return std::binary_search(std::begin(BossNpcParams), std::end(BossNpcParams), c.npc_param);
 }
 
-void reward_kill(const Character& c, Address game_data, Key key, bool owns_world) {
+void reward_kill(const Character& c, Address game_data, Key key, bool /*owns_world*/) {
     if (is_critter(c.model)) {
         log_event("Wildlife defeated; no level", key, c.model);
         return;
     }
-    auto& progress = owns_world ? world.progress : guest_progress;
+    // A guest's rewards go to their own character journal, like the host's.
     if (is_boss(c)) {
         log_event("Boss defeated; level points", key, static_cast<int>(BossPoints));
-        add_level_points(game_data, key, BossPoints, progress, owns_world);
+        add_level_points(game_data, key, BossPoints, world.progress, true);
         return;
     }
-    auto& kills = owns_world ? world.kills : guest_kills;
-    if (owns_world && !append_record('C', kills + 1)) return;
-    ++kills;
-    add_level_points(game_data, key, EnemyPoints, progress, owns_world);
-    log_event("Enemy kill counted; level points", key, static_cast<int>(progress));
+    if (!append_record('C', world.kills + 1)) return;
+    ++world.kills;
+    add_level_points(game_data, key, EnemyPoints, world.progress, true);
+    log_event("Enemy kill counted; level points", key, static_cast<int>(world.progress));
 }
 
 void enemy_tick(const Character& c, Key player_handle, Address game_data, bool owns_world) {
@@ -487,7 +483,10 @@ void enemy_tick(const Character& c, Key player_handle, Address game_data, bool o
     }
     old.last_frame = frame;
     const bool alive = !c.dead && c.hp > 0;
-    if (key && (owns_world ? world.defeated : guest_defeats).contains(key)) {
+    // The journal always belongs to the local character. A guest in a
+    // Seamless Co-op host world records the team's kills there too, so those
+    // enemies stay dead back home. Only the host changes the world it is in.
+    if (key && world.defeated.contains(key)) {
         if (alive && owns_world && !script_controls_death(c)) {
             using Function = void (*)(Address, bool);
             reinterpret_cast<Function>(image + ForceDeath)(c.instance, false);
@@ -505,12 +504,11 @@ void enemy_tick(const Character& c, Key player_handle, Address game_data, bool o
     }
     if (!old.seen_alive) return;
     const bool credited = old.player_hit || get<Key>(c.instance + LastHitBy) == player_handle;
-    if (key && owns_world) {
+    if (key) {
         if (!append_record('K', key)) return;
         world.defeated.insert(key);
-        log_event("Enemy defeat recorded", key, c.model);
-    } else if (key && credited) {
-        guest_defeats.insert(key);
+        log_event(owns_world ? "Enemy defeat recorded" : "Enemy defeat in host world recorded for own world",
+                  key, c.model);
     }
     old.seen_alive = false;
     if (credited) {
@@ -671,20 +669,17 @@ void tick(TickTiming& timing) {
                                              get<int>(player.instance + 0x68));
     if (in_remote_world == owns_world) {
         in_remote_world = !owns_world;
-        guest_defeats.clear();
-        guest_kills = 0;
-        guest_progress = 0;
         growth.valid = false;
         observed.clear();
         map_scan = {};
         world.active = false;
-        log(owns_world ? "Host world active" : "Guest world active; enemy writes disabled");
+        log(owns_world ? "Host world active" : "Guest world active; kills saved to own world, host world unchanged");
     }
-    if (owns_world && (!world.active || world.slot != slot || world.player != player_id ||
-                       playtime + 30000ull < world.last_playtime)) {
+    if (!world.active || world.slot != slot || world.player != player_id ||
+        playtime + 30000ull < world.last_playtime) {
         open_world(slot, player_id, game_deaths, playtime, seamless);
     }
-    if (owns_world) world.last_playtime = playtime;
+    world.last_playtime = playtime;
     if (owns_world) check_item_flags();
     undo_rune_levels(game_data, hash_part(player_id, static_cast<std::uint32_t>(slot)));
     bool wiped{};

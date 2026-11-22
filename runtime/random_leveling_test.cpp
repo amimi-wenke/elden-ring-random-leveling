@@ -144,6 +144,34 @@ int main() {
     assert(suppressed_character == 0);
     std::filesystem::remove(world.journal);
 
+    // Seamless guest: a kill in the host world is saved to the guest's own
+    // journal, so the enemy stays dead when the guest returns home.
+    open_world(4, 123, 0, 0, true);
+    put(new_actor + 0x1e8, 1042380206u);
+    put(new_actor + Handle, Key(93));
+    put(new_actor + LastHitBy, Key(55));
+    npc = {new_actor, new_data, 300, 300, 300, 300, 2000, 7, false};
+    const Key guest_key = placement_key(npc);
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    npc.hp = 0;
+    npc.dead = true;
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    assert(world.defeated.contains(guest_key) && world.kills == 1);
+    open_world(4, 123, 0, 0, true);
+    assert(world.defeated.contains(guest_key) && world.kills == 1 && world.progress == 1);
+    suppressed_character = 0;
+    npc.hp = 300;
+    npc.dead = false;
+    ++frame;
+    enemy_tick(npc, 55, player, false);
+    assert(suppressed_character == 0); // Never touch the host's world.
+    ++frame;
+    enemy_tick(npc, 55, player, true);
+    assert(suppressed_character == new_actor); // Back home: stays dead.
+    std::filesystem::remove(world.journal);
+
     // Level curve: wildlife gives nothing, enemies 1 point, bosses 20 points.
     assert(level_cost(1) == 5 && level_cost(10) == 5 && level_cost(14) == 5 && level_cost(15) == 6 &&
            level_cost(20) == 7 && level_cost(100) == 23 && level_cost(150) == 33);
