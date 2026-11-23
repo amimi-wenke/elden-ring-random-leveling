@@ -350,6 +350,29 @@ int main() {
     put(fm + 0x20, 100u);
     assert(flag_group_state(1043317) == -1);
 
+    // Settings file: defaults match the built-in rules; edits change them.
+    {
+        std::string problems;
+        const std::string shipped(DefaultSettings);
+        const Settings defaults = parse_settings(shipped, problems);
+        assert(problems.empty());
+        assert(defaults.enemy_points == 1 && defaults.boss_points == 20 && defaults.wildlife_points == 0 &&
+               defaults.level_cost == 5 && defaults.flat_cost_until == 10 && defaults.cost_step_levels == 5 &&
+               defaults.max_level_cost == 0 && defaults.death_health_percent == 5 && defaults.team_wipe_only &&
+               defaults.undo_rune_levels && defaults.enemies_stay_dead && defaults.rune_hook);
+        settings = parse_settings("\xef\xbb\xbf[x]\r\nenemy_points = 3 ; note\r\nboss_points=50\r\n"
+                                  "level_cost = 2\ncost_step_levels = 0\ndeath_health_percent = 10\n"
+                                  "max_level_cost = 1\nwildlife_points = -1\ncolour = 3\n", problems);
+        assert(problems == " bad:wildlife_points unknown:colour");
+        assert(settings.enemy_points == 3 && settings.boss_points == 50 && settings.wildlife_points == 0);
+        assert(level_cost(1) == 1 && level_cost(500) == 1); // Capped at max_level_cost.
+        settings.max_level_cost = 0;
+        assert(level_cost(1) == 2 && level_cost(500) == 2); // Never rises.
+        assert(scaled(1000, 1) == 1100 && scaled(1000, 3) == 1300);
+        settings = {};
+        assert(level_cost(150) == 33 && scaled(1000, 1) == 1050);
+    }
+
     std::filesystem::remove(state_dir / L"random-leveling.log");
     std::filesystem::remove(state_dir);
     std::puts("Random Leveling runtime checks passed.");

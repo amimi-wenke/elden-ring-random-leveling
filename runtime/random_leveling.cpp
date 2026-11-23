@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <limits>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -77,11 +78,75 @@ constexpr std::ptrdiff_t Runes = 0x6c;
 // (level 20: 7, 60: 15, 100: 23, 150: 33, 300: 63). Random attributes are
 // often not the ones a build needs, so the curve allows high levels.
 // Simulated base-game results: story run ~190, thorough run ~275, every enemy ~345.
-constexpr unsigned EnemyPoints = 1;
-constexpr unsigned BossPoints = 20;
+// Values players can change in random-leveling.ini next to the profile.
+// The defaults are the designed rules above.
+struct Settings {
+    unsigned enemy_points = 1;
+    unsigned boss_points = 20;
+    unsigned wildlife_points = 0;
+    unsigned level_cost = 5;           // Points per level at the start.
+    unsigned flat_cost_until = 10;     // The cost starts rising after this level.
+    unsigned cost_step_levels = 5;     // +1 point every this many levels (0 = never).
+    unsigned max_level_cost = 0;       // Upper limit of the cost (0 = none).
+    unsigned death_health_percent = 5; // Enemy health added per death or team wipe.
+    bool undo_rune_levels = true;
+    bool enemies_stay_dead = true;
+    bool team_wipe_only = true;
+    bool rune_hook = true;
+};
+Settings settings;
 
 unsigned level_cost(unsigned level) {
-    return 5 + (level > 10 ? (level - 10) / 5 : 0);
+    unsigned cost = settings.level_cost;
+    if (settings.cost_step_levels && level > settings.flat_cost_until)
+        cost += (level - settings.flat_cost_until) / settings.cost_step_levels;
+    if (settings.max_level_cost) cost = std::min(cost, settings.max_level_cost);
+    return std::max(cost, 1u);
+}
+
+// Reads `key = value` lines; `;` or `#` start a comment and [sections] are
+// only for reading. Missing keys use the defaults; bad values are reported.
+Settings parse_settings(const std::string& text, std::string& report) {
+    Settings out;
+    std::size_t start = 0;
+    if (text.rfind("\xef\xbb\xbf", 0) == 0) start = 3; // UTF-8 BOM.
+    const auto trim = [](const std::string& v) {
+        const auto a = v.find_first_not_of(" \t\r");
+        if (a == std::string::npos) return std::string{};
+        return v.substr(a, v.find_last_not_of(" \t\r") - a + 1);
+    };
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(start, end - start);
+        start = end + 1;
+        line = line.substr(0, line.find_first_of(";#"));
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = trim(line.substr(0, eq));
+        const std::string value = trim(line.substr(eq + 1));
+        char* stop{};
+        const unsigned long number = std::strtoul(value.c_str(), &stop, 10);
+        if (value.empty() || *stop || value[0] == '-' || number > 1000000) {
+            report += " bad:" + key;
+            continue;
+        }
+        const auto n = static_cast<unsigned>(number);
+        if (key == "enemy_points") out.enemy_points = n;
+        else if (key == "boss_points") out.boss_points = n;
+        else if (key == "wildlife_points") out.wildlife_points = n;
+        else if (key == "level_cost") out.level_cost = std::max(n, 1u);
+        else if (key == "flat_cost_until") out.flat_cost_until = n;
+        else if (key == "cost_step_levels") out.cost_step_levels = n;
+        else if (key == "max_level_cost") out.max_level_cost = n;
+        else if (key == "death_health_percent") out.death_health_percent = std::min(n, 1000u);
+        else if (key == "undo_rune_levels") out.undo_rune_levels = n != 0;
+        else if (key == "enemies_stay_dead") out.enemies_stay_dead = n != 0;
+        else if (key == "team_wipe_only") out.team_wipe_only = n != 0;
+        else if (key == "rune_hook") out.rune_hook = n != 0;
+        else report += " unknown:" + key;
+    }
+    return out;
 }
 
 constexpr int BossNpcParams[] = {
@@ -389,7 +454,8 @@ void add_level_points(Address game_data, Key key, unsigned points, std::uint32_t
 }
 
 int scaled(int base, unsigned deaths) {
-    const auto value = static_cast<std::int64_t>(base) + static_cast<std::int64_t>(base) * deaths / 20;
+    const auto value = static_cast<std::int64_t>(base) +
+                       static_cast<std::int64_t>(base) * deaths * settings.death_health_percent / 100;
     return static_cast<int>(std::min<std::int64_t>(value, 100000000));
 }
 
@@ -468,18 +534,23 @@ bool is_boss(const Character& c) {
 
 void reward_kill(const Character& c, Address game_data, Key key, bool /*owns_world*/) {
     if (is_critter(c.model)) {
-        log_event("Wildlife defeated; no level", key, c.model);
+        if (!settings.wildlife_points) {
+            log_event("Wildlife defeated; no level", key, c.model);
+            return;
+        }
+        add_level_points(game_data, key, settings.wildlife_points, world.progress, true);
+        log_event("Wildlife defeated; level points", key, static_cast<int>(world.progress));
         return;
     }
     // A guest's rewards go to their own character journal, like the host's.
     if (is_boss(c)) {
-        log_event("Boss defeated; level points", key, static_cast<int>(BossPoints));
-        add_level_points(game_data, key, BossPoints, world.progress, true);
+        log_event("Boss defeated; level points", key, static_cast<int>(settings.boss_points));
+        add_level_points(game_data, key, settings.boss_points, world.progress, true);
         return;
     }
     if (!append_record('C', world.kills + 1)) return;
     ++world.kills;
-    add_level_points(game_data, key, EnemyPoints, world.progress, true);
+    add_level_points(game_data, key, settings.enemy_points, world.progress, true);
     log_event("Enemy kill counted; level points", key, static_cast<int>(world.progress));
 }
 
@@ -510,7 +581,7 @@ void enemy_tick(const Character& c, Key player_handle, Address game_data, bool o
     // Seamless Co-op host world records the team's kills there too, so those
     // enemies stay dead back home. Only the host changes the world it is in.
     if (key && world.defeated.contains(key)) {
-        if (alive && owns_world && !script_controls_death(c)) {
+        if (alive && owns_world && settings.enemies_stay_dead && !script_controls_death(c)) {
             using Function = void (*)(Address, bool);
             reinterpret_cast<Function>(image + ForceDeath)(c.instance, false);
             old.seen_alive = false;
@@ -770,7 +841,91 @@ struct TickTiming {
     }
 };
 
+std::filesystem::path settings_path;
+FILETIME settings_time{};
+
+// Written as random-leveling.ini when the file is missing.
+const char DefaultSettings[] = R"(; 随机升级（Random Leveling）设置。保存后约 2 秒内在游戏里生效，不用重启。
+; 只有 rune_hook 需要重启游戏。改坏了就删掉本文件，下次启动会重新生成默认值。
+; 每次读取的结果会写进 state\random-leveling.log，填错的项会被忽略并写明。
+
+[升级点数]
+; 击杀普通敌人和精英怪获得的点数
+enemy_points = 1
+; 击杀 Boss（含野外 Boss）获得的点数
+boss_points = 20
+; 击杀小动物获得的点数，0 = 不给
+wildlife_points = 0
+
+[升级曲线]
+; 每升一级需要的点数从 level_cost 开始，
+; 角色等级超过 flat_cost_until 后，每 cost_step_levels 级多需要 1 点。
+; 默认值：20 级 7 点，60 级 15 点，100 级 23 点，150 级 33 点。
+level_cost = 5
+flat_cost_until = 10
+; 0 = 一直不涨
+cost_step_levels = 5
+; 每级所需点数的上限，0 = 不设上限
+max_level_cost = 0
+
+[惩罚]
+; 每次死亡（无缝联机为每次团灭）敌人血量增加基础值的百分之几，线性叠加
+death_health_percent = 5
+; 1 = 无缝联机只有团灭才算；0 = 房主每次死亡都算
+team_wipe_only = 1
+
+[规则开关]
+; 1 = 撤销用卢恩升级并退还卢恩；0 = 允许用卢恩升级
+undo_rune_levels = 1
+; 1 = 已击杀的敌人读图后保持死亡；0 = 不强制（坐赐福不复活仍由参数文件控制）
+enemies_stay_dead = 1
+; 1 = 跟随游戏发放卢恩来计算击杀（联机同步）；0 = 改用扫描敌人。改这项需要重启游戏
+rune_hook = 1
+)";
+
+void load_settings(bool startup) {
+    if (settings_path.empty()) settings_path = state_dir.parent_path() / L"random-leveling.ini";
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (!GetFileAttributesExW(settings_path.c_str(), GetFileExInfoStandard, &info)) {
+        if (!startup) return;
+        if (FILE* file = _wfopen(settings_path.c_str(), L"wb")) {
+            std::fwrite(DefaultSettings, 1, sizeof(DefaultSettings) - 1, file);
+            std::fclose(file);
+            log("Created random-leveling.ini with default values");
+        }
+        if (!GetFileAttributesExW(settings_path.c_str(), GetFileExInfoStandard, &info)) return;
+    }
+    if (!startup && CompareFileTime(&info.ftLastWriteTime, &settings_time) == 0) return;
+    std::string text;
+    FILE* file = _wfopen(settings_path.c_str(), L"rb");
+    if (!file) return; // An editor may be saving it; try again on the next check.
+    char buffer[4096];
+    std::size_t n;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), file)) > 0 && text.size() < 65536) text.append(buffer, n);
+    std::fclose(file);
+    settings_time = info.ftLastWriteTime;
+    std::string problems;
+    const bool hook = settings.rune_hook;
+    settings = parse_settings(text, problems);
+    if (!startup) settings.rune_hook = hook; // Takes effect only after a restart.
+    char message[512];
+    std::snprintf(message, sizeof(message),
+                  "Settings: enemy %u, boss %u, wildlife %u; cost %u, flat until %u, +1 every %u, max %u; "
+                  "health +%u%% per death; team wipe only %d; undo rune levels %d; stay dead %d; rune hook %d%s%s",
+                  settings.enemy_points, settings.boss_points, settings.wildlife_points, settings.level_cost,
+                  settings.flat_cost_until, settings.cost_step_levels, settings.max_level_cost,
+                  settings.death_health_percent, settings.team_wipe_only, settings.undo_rune_levels,
+                  settings.enemies_stay_dead, settings.rune_hook, problems.empty() ? "" : "; ignored",
+                  problems.c_str());
+    log(message);
+}
+
 void tick(TickTiming& timing) {
+    static ULONGLONG next_settings_check{};
+    if (GetTickCount64() >= next_settings_check) {
+        next_settings_check = GetTickCount64() + 2000;
+        load_settings(false);
+    }
     timing.next("world lookup");
     const auto manager = get<Address>(image + WorldChrMan);
     if (!readable(manager, sizeof(Address)) || get<Address>(manager) != image + WorldVtable) return;
@@ -812,10 +967,14 @@ void tick(TickTiming& timing) {
         log("Rune award hook was overwritten; falling back to the enemy scan");
     }
     process_deaths(game_data, owns_world);
-    undo_rune_levels(game_data, hash_part(player_id, static_cast<std::uint32_t>(slot)));
+    if (settings.undo_rune_levels) {
+        undo_rune_levels(game_data, hash_part(player_id, static_cast<std::uint32_t>(slot)));
+    } else {
+        growth.valid = false; // Turning it back on must not undo earlier levels.
+    }
     bool wiped{};
     static bool reported_party_error{};
-    if (owns_world && seamless) {
+    if (owns_world && seamless && settings.team_wipe_only) {
         // In co-op one player's death is not a penalty; a full team wipe is.
         world.last_game_deaths = game_deaths;
         if (!team_wiped(manager, player.instance, wiped)) {
@@ -988,8 +1147,11 @@ DWORD WINAPI init(void* module) {
             return 0;
         }
         rng.seed(std::random_device{}());
+        load_settings(true);
         // Install before the world loads, while no character can be dying.
-        if (const Address trampoline = install_jump(image + RuneAward, RuneAwardPrologue,
+        if (!settings.rune_hook) {
+            log("Rune award hook turned off in random-leveling.ini; using the enemy scan");
+        } else if (const Address trampoline = install_jump(image + RuneAward, RuneAwardPrologue,
                                                     reinterpret_cast<Address>(&on_rune_award))) {
             rune_award_original = reinterpret_cast<RuneAwardFn>(trampoline);
             death_hook_active = true;
