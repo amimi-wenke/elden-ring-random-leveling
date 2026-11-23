@@ -722,26 +722,76 @@ bool jump_in_place(Address target, Address hook) {
     return matches(target, {0xff, 0x25, 0, 0, 0, 0}) && readable(target + 6, 8) && get<Address>(target + 6) == hook;
 }
 
+// Finds the descriptor node of an event-flag group in CSEventFlagMan's
+// std::map. Returns 0 when the group has none, or -1 (as Address) when the
+// manager is not ready or not recognised.
+constexpr Address NoFlagManager = ~Address{};
+Address flag_group_node(unsigned group) {
+    const auto manager = get<Address>(image + EventFlagMan);
+    if (!readable(manager, 0x48) || get<unsigned>(manager + 0x1c) != 1000 ||
+        get<unsigned>(manager + 0x20) != 125) return NoFlagManager;
+    const auto head = get<Address>(manager + 0x38);
+    if (!readable(head, 0x20)) return NoFlagManager;
+    Address node = get<Address>(head + 8); // MSVC std::map: head->parent is the root.
+    for (unsigned depth = 0; depth < 64; ++depth) {
+        if (!readable(node, 0x38)) return NoFlagManager;
+        if (get<std::uint8_t>(node + 0x19)) return 0; // Reached the sentinel.
+        const auto key = get<unsigned>(node + 0x20);
+        if (group == key) return node;
+        node = get<Address>(node + (group < key ? 0 : 0x10));
+    }
+    return NoFlagManager;
+}
+
 // 1 = storage exists, 0 = no storage (flags in the group are never kept),
 // -1 = the event flag manager is not ready or not recognised.
 int flag_group_state(unsigned group) {
-    const auto manager = get<Address>(image + EventFlagMan);
-    if (!readable(manager, 0x48) || get<unsigned>(manager + 0x1c) != 1000 ||
-        get<unsigned>(manager + 0x20) != 125) return -1;
-    const auto head = get<Address>(manager + 0x38);
-    if (!readable(head, 0x20)) return -1;
-    Address node = get<Address>(head + 8); // MSVC std::map: head->parent is the root.
-    for (unsigned depth = 0; depth < 64; ++depth) {
-        if (!readable(node, 0x38)) return -1;
-        if (get<std::uint8_t>(node + 0x19)) return 0; // Reached the sentinel.
-        const auto key = get<unsigned>(node + 0x20);
-        if (group == key) {
-            const auto mode = get<unsigned>(node + 0x28);
-            return mode == 1 || mode == 2 ? 1 : 0;
-        }
-        node = get<Address>(node + (group < key ? 0 : 0x10));
+    const Address node = flag_group_node(group);
+    if (node == NoFlagManager) return -1;
+    if (!node) return 0;
+    const auto mode = get<unsigned>(node + 0x28);
+    return mode == 1 || mode == 2 ? 1 : 0;
+}
+
+// 1 = set, 0 = clear, -1 = unknown.
+int event_flag(unsigned flag) {
+    const Address node = flag_group_node(flag / 1000);
+    if (node == NoFlagManager || !node) return -1;
+    Address block{};
+    const auto mode = get<unsigned>(node + 0x28);
+    if (mode == 1) {
+        const auto manager = get<Address>(image + EventFlagMan);
+        block = get<Address>(manager + 0x28) + Address(get<unsigned>(node + 0x30)) * 125;
+    } else if (mode == 2) {
+        block = get<Address>(node + 0x30);
+    } else {
+        return -1;
     }
-    return -1;
+    const unsigned local = flag % 1000;
+    if (!readable(block + local / 8, 1)) return -1;
+    return (get<std::uint8_t>(block + local / 8) >> (7 - local % 8)) & 1;
+}
+
+constexpr unsigned ItemFlags[] = {
+#include "item_flags.inc"
+};
+
+// Logs how many one-time equipment flags the save has, whenever it changes.
+// A pickup that never raises the count means the game did not keep the flag.
+void report_item_flags() {
+    static int last = -1;
+    int set{};
+    for (const unsigned flag : ItemFlags) {
+        const int state = event_flag(flag);
+        if (state < 0) return;
+        set += state;
+    }
+    if (set == last) return;
+    last = set;
+    char message[96];
+    std::snprintf(message, sizeof(message), "Equipment obtained (one-time drop flags set): %d of %zu",
+                  set, std::size(ItemFlags));
+    log(message);
 }
 
 void check_item_flags() {
@@ -961,6 +1011,7 @@ void tick(TickTiming& timing) {
     }
     world.last_playtime = playtime;
     if (owns_world) check_item_flags();
+    if (frame % 64 == 0) report_item_flags();
     if (death_hook_active && frame % 128 == 0 &&
         !jump_in_place(image + RuneAward, reinterpret_cast<Address>(&on_rune_award))) {
         death_hook_active = false; // Another mod replaced the hook; use the map scan.

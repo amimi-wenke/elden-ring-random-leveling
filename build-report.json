@@ -1,16 +1,13 @@
 {
   "source_sha256": "b8cdab84c0772f66811fdc5176a381877ca6657b37d420cc2c1562a90d63870e",
-  "output_sha256": "fcdff4892ab62aa1571259e29e3cf7ae647310d4520bfc5dde21528c5f6bd1a3",
+  "output_sha256": "7822d3422c347fd342f3706b47a596801e45e910a76f9fe5a970feea7b608186",
   "equipment_items": 320,
   "patched_equipment_lots": 597,
   "left_unchanged_flagged_or_cumulative_lots": [],
   "npc_rest_respawn_disabled": 4924,
   "boss_npc_rows": 315,
   "item_flag_groups": [
-    1035507,
-    1039547,
-    1043317,
-    1051577
+    400
   ],
   "unchanged_binder_entries": 192,
   "npc_team_distribution": {

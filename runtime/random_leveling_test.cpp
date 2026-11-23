@@ -347,8 +347,21 @@ int main() {
     assert(flag_group_state(1051577) == 1);
     assert(flag_group_state(1032502) == 0);
     assert(flag_group_state(400) == 0);
+    // Reading a flag: mode 1 is an index into the holder array, mode 2 a pointer.
+    std::array<std::uint8_t, 125 * 3> holders{};
+    std::array<std::uint8_t, 125> external{};
+    put(fm + 0x28, reinterpret_cast<Address>(holders.data()));
+    put(r + 0x30, 2u);                                                // Group 1043317 -> holder 2.
+    put(rr + 0x30, reinterpret_cast<Address>(external.data()));       // Group 1051577 -> external.
+    holders[125 * 2 + 909 / 8] = std::uint8_t(1 << (7 - 909 % 8));
+    external[0] = 0x80;
+    assert(event_flag(1043317909) == 1 && event_flag(1043317908) == 0);
+    assert(event_flag(1051577000) == 1 && event_flag(1051577001) == 0);
+    assert(event_flag(1032502000) == -1);
+
     put(fm + 0x20, 100u);
     assert(flag_group_state(1043317) == -1);
+    assert(event_flag(1043317909) == -1);
 
     // Settings file: defaults match the built-in rules; edits change them.
     {
